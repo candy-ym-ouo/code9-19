@@ -16,7 +16,7 @@ import {
 import { getDb, newId, nowIso, toJson } from '../db.js';
 import { ah, ok } from '../http/respond.js';
 import { authenticate } from '../http/middleware.js';
-import { ctxOf, libraryTz } from '../http/context.js';
+import { actorOf, ctxOf, libraryTz } from '../http/context.js';
 import { errors } from '../http/errors.js';
 import { requireInspiration, syncStatus, touch } from '../services/inspirations.js';
 import {
@@ -81,7 +81,7 @@ timingRouter.put(
     const row = requireInspiration(req.params.id, ctx.libraryId);
     const input = timingSchema.parse(req.body) as TimingDto;
     upsertTiming(ctx.libraryId, row.id, input);
-    syncStatus(row.id);
+    syncStatus(row.id, actorOf(req));
 
     let windows: unknown[] = [];
     if (row.spot_id) {

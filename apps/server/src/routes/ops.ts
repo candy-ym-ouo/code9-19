@@ -6,7 +6,7 @@ import { getDb, newId, nowIso } from '../db.js';
 import { config } from '../config.js';
 import { ah, ok } from '../http/respond.js';
 import { authenticate, requireOwner } from '../http/middleware.js';
-import { ctxOf } from '../http/context.js';
+import { actorOf, ctxOf } from '../http/context.js';
 import { errors } from '../http/errors.js';
 import { createBackup, exportAll, listBackups, restoreBackup } from '../services/backup.js';
 import { addTags, createInspiration, requireInspiration } from '../services/inspirations.js';
@@ -139,6 +139,7 @@ opsRouter.post(
     }
 
     let result: Record<string, unknown> = {};
+    const actor = actorOf(req);
     if (input.opType === 'create_inspiration') {
       const payload = z.object({ title: z.string().min(1).max(200), note: z.string().max(5000).nullable().optional() }).parse(
         input.payload,
@@ -147,6 +148,7 @@ opsRouter.post(
         libraryId: ctx.libraryId,
         title: payload.title,
         note: payload.note ?? null,
+        actor,
       });
       result = { inspirationId: id };
     } else if (input.opType === 'tag') {
@@ -154,7 +156,7 @@ opsRouter.post(
         .object({ inspirationId: z.string().min(1), addTagIds: z.array(z.string()).default([]) })
         .parse(input.payload);
       requireInspiration(payload.inspirationId, ctx.libraryId);
-      const added = addTags(payload.inspirationId, payload.addTagIds, 'bulk');
+      const added = addTags(payload.inspirationId, payload.addTagIds, 'bulk', actor);
       result = { inspirationId: payload.inspirationId, added };
     } else if (input.opType === 'fill_result') {
       const payload = z

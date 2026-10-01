@@ -12,6 +12,19 @@ export type InspirationStatus = (typeof InspirationStatus)[keyof typeof Inspirat
 
 export const INSPIRATION_TERMINAL: InspirationStatus[] = ['archived', 'dropped'];
 
+export const LifecycleSource = {
+  user: 'user',
+  system: 'system',
+  backfill: 'backfill',
+} as const;
+export type LifecycleSource = (typeof LifecycleSource)[keyof typeof LifecycleSource];
+
+export const LIFECYCLE_SOURCE_LABEL: Record<LifecycleSource, string> = {
+  user: '手动操作',
+  system: '系统自动',
+  backfill: '补录',
+};
+
 export const AlbumStatus = {
   planning: 'planning',
   collecting: 'collecting',

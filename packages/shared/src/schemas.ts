@@ -58,6 +58,14 @@ export const updateInspirationSchema = z.object({
   spotId: z.string().min(1).nullable().optional(),
 });
 
+/** 补录一条历史状态转变：只补台账，不改当前状态；发生时间必须是过去 */
+export const backfillLifecycleSchema = z.object({
+  toStatus: zEnum(InspirationStatus),
+  fromStatus: zEnum(InspirationStatus).nullish(),
+  occurredAt: z.string().datetime(),
+  reason: z.string().min(1).max(500),
+});
+
 export const createTagSchema = z.object({
   domain: zEnum(TagDomain),
   name: z.string().min(1).max(60),

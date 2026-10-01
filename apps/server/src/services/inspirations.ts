@@ -1,5 +1,6 @@
 import { getDb, newId, nowIso, parseJson, toJson } from '../db.js';
 import { errors } from '../http/errors.js';
+import { recordLifecycle, SYSTEM_ACTOR, type LifecycleActor } from './lifecycle.js';
 import type { InspirationRow } from './serialization.js';
 
 export function slugify(name: string): string {
@@ -41,8 +42,9 @@ export function hasTiming(inspirationId: string): boolean {
 /**
  * 状态机（文档 6.1）：所有状态变更都从这里走，保证没有"断头状态"。
  * 终态（archived / dropped）不会被自动改写。
+ * 每次实际转变都会写入生命周期审计台账（actor 缺省记为系统）。
  */
-export function syncStatus(inspirationId: string): InspirationRow['status'] {
+export function syncStatus(inspirationId: string, actor?: LifecycleActor): InspirationRow['status'] {
   const db = getDb();
   const row = db.prepare('SELECT * FROM inspiration WHERE id = ?').get(inspirationId) as
     | InspirationRow
@@ -79,6 +81,13 @@ export function syncStatus(inspirationId: string): InspirationRow['status'] {
       nowIso(),
       inspirationId,
     );
+    recordLifecycle({
+      libraryId: row.library_id,
+      inspirationId,
+      fromStatus: row.status,
+      toStatus: status,
+      actor: actor ?? SYSTEM_ACTOR,
+    });
   }
   return status;
 }
@@ -88,6 +97,7 @@ export function createInspiration(params: {
   title: string;
   note?: string | null;
   seasonTags?: number[];
+  actor?: LifecycleActor;
 }): string {
   const db = getDb();
   const id = newId();
@@ -97,6 +107,14 @@ export function createInspiration(params: {
        miss_count, hit_rate, created_at, updated_at)
      VALUES (?,?,?,?, 'draft', ?, 0,0,0,0, ?, ?)`,
   ).run(id, params.libraryId, params.title, params.note ?? null, toJson(params.seasonTags ?? []), ts, ts);
+  recordLifecycle({
+    libraryId: params.libraryId,
+    inspirationId: id,
+    fromStatus: null,
+    toStatus: 'draft',
+    actor: params.actor ?? SYSTEM_ACTOR,
+    reason: '创建灵感卡',
+  });
   reindexFts(id);
   return id;
 }
@@ -105,6 +123,7 @@ export function addTags(
   inspirationId: string,
   tagIds: string[],
   source: 'manual' | 'bulk' | 'album_gap' | 'suggested' = 'manual',
+  actor?: LifecycleActor,
 ): number {
   const db = getDb();
   const ts = nowIso();
@@ -127,11 +146,11 @@ export function addTags(
     touch(inspirationId);
     reindexFts(inspirationId);
   }
-  syncStatus(inspirationId);
+  syncStatus(inspirationId, actor);
   return added;
 }
 
-export function removeTags(inspirationId: string, tagIds: string[]): number {
+export function removeTags(inspirationId: string, tagIds: string[], actor?: LifecycleActor): number {
   const db = getDb();
   let removed = 0;
   const run = db.transaction(() => {
@@ -150,35 +169,79 @@ export function removeTags(inspirationId: string, tagIds: string[]): number {
     touch(inspirationId);
     reindexFts(inspirationId);
   }
-  syncStatus(inspirationId);
+  syncStatus(inspirationId, actor);
   return removed;
 }
 
-export function setSpot(inspirationId: string, spotId: string | null): void {
+export function setSpot(inspirationId: string, spotId: string | null, actor?: LifecycleActor): void {
   getDb()
     .prepare('UPDATE inspiration SET spot_id = ?, updated_at = ? WHERE id = ?')
     .run(spotId, nowIso(), inspirationId);
-  syncStatus(inspirationId);
+  syncStatus(inspirationId, actor);
 }
 
-export function archiveInspiration(id: string, reason: string | null): void {
-  getDb()
-    .prepare('UPDATE inspiration SET status = ?, archived_reason = ?, updated_at = ? WHERE id = ?')
-    .run('archived', reason, nowIso(), id);
+export function archiveInspiration(id: string, reason: string | null, actor?: LifecycleActor): void {
+  const db = getDb();
+  const before = db.prepare('SELECT library_id, status FROM inspiration WHERE id = ?').get(id) as
+    | { library_id: string; status: InspirationRow['status'] }
+    | undefined;
+  if (!before) throw errors.notFound('灵感卡');
+  db.prepare('UPDATE inspiration SET status = ?, archived_reason = ?, updated_at = ? WHERE id = ?').run(
+    'archived',
+    reason,
+    nowIso(),
+    id,
+  );
+  if (before.status !== 'archived') {
+    recordLifecycle({
+      libraryId: before.library_id,
+      inspirationId: id,
+      fromStatus: before.status,
+      toStatus: 'archived',
+      actor: actor ?? SYSTEM_ACTOR,
+      reason,
+    });
+  }
 }
 
-export function dropInspiration(id: string, reason: string): void {
-  getDb()
-    .prepare('UPDATE inspiration SET status = ?, archived_reason = ?, updated_at = ? WHERE id = ?')
-    .run('dropped', reason, nowIso(), id);
+export function dropInspiration(id: string, reason: string, actor?: LifecycleActor): void {
+  const db = getDb();
+  const before = db.prepare('SELECT library_id, status FROM inspiration WHERE id = ?').get(id) as
+    | { library_id: string; status: InspirationRow['status'] }
+    | undefined;
+  if (!before) throw errors.notFound('灵感卡');
+  db.prepare('UPDATE inspiration SET status = ?, archived_reason = ?, updated_at = ? WHERE id = ?').run(
+    'dropped',
+    reason,
+    nowIso(),
+    id,
+  );
+  if (before.status !== 'dropped') {
+    recordLifecycle({
+      libraryId: before.library_id,
+      inspirationId: id,
+      fromStatus: before.status,
+      toStatus: 'dropped',
+      actor: actor ?? SYSTEM_ACTOR,
+      reason,
+    });
+  }
 }
 
 /** 合并重复卡：标签与图片并入 keep，来源卡进终态 dropped（文档 9.2） */
-export function mergeInspirations(keepId: string, mergeIds: string[], reason = 'merged'): void {
+export function mergeInspirations(
+  keepId: string,
+  mergeIds: string[],
+  reason = 'merged',
+  actor?: LifecycleActor,
+): void {
   const db = getDb();
   const run = db.transaction(() => {
     for (const mergeId of mergeIds) {
       if (mergeId === keepId) continue;
+      const before = db
+        .prepare('SELECT library_id, status FROM inspiration WHERE id = ?')
+        .get(mergeId) as { library_id: string; status: InspirationRow['status'] } | undefined;
       const tags = db
         .prepare('SELECT tag_id FROM inspiration_tag WHERE inspiration_id = ?')
         .all(mergeId) as { tag_id: string }[];
@@ -195,12 +258,22 @@ export function mergeInspirations(keepId: string, mergeIds: string[], reason = '
         nowIso(),
         mergeId,
       );
+      if (before && before.status !== 'dropped') {
+        recordLifecycle({
+          libraryId: before.library_id,
+          inspirationId: mergeId,
+          fromStatus: before.status,
+          toStatus: 'dropped',
+          actor: actor ?? SYSTEM_ACTOR,
+          reason: `合并入 ${keepId}：${reason}`,
+        });
+      }
       reindexFts(mergeId);
     }
     reindexFts(keepId);
   });
   run();
-  syncStatus(keepId);
+  syncStatus(keepId, actor);
 }
 
 /** 维护 FTS 索引（检索用，文档 15.1） */

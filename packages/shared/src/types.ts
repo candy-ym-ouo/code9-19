@@ -6,6 +6,7 @@ import type {
   GapStatus,
   HitLevel,
   InspirationStatus,
+  LifecycleSource,
   MissReason,
   PlanStatus,
   ReminderActionKind,
@@ -234,4 +235,23 @@ export interface AuthUser {
   displayName: string;
   libraryId: string;
   role: 'owner' | 'member';
+}
+
+/**
+ * 生命周期审计事件。排序权威是 seq（追加序）：
+ * occurredAt 是业务发生时间（补录可早于落库时刻），recordedAt 是落库时间。
+ */
+export interface LifecycleEventDto {
+  id: string;
+  inspirationId: string;
+  inspirationTitle?: string;
+  seq: number;
+  fromStatus: InspirationStatus | null;
+  toStatus: InspirationStatus;
+  actorId: string | null;
+  actorName: string;
+  source: LifecycleSource;
+  reason: string | null;
+  occurredAt: string;
+  recordedAt: string;
 }

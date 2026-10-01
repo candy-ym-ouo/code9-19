@@ -13,11 +13,12 @@ import {
   expectedAzimuth,
   validateGeometry,
   type AssetRole,
+  type InspirationStatus,
 } from '@flil/shared';
 import { getDb, newId, nowIso, parseJson, toJson } from '../db.js';
 import { ah, ok } from '../http/respond.js';
 import { authenticate, currentUser, requireOwner } from '../http/middleware.js';
-import { ctxOf } from '../http/context.js';
+import { actorOf, ctxOf } from '../http/context.js';
 import { errors } from '../http/errors.js';
 import {
   addTags,
@@ -32,6 +33,7 @@ import {
   syncStatus,
   touch,
 } from '../services/inspirations.js';
+import { recordLifecycle } from '../services/lifecycle.js';
 import { toAssetDto, toAnnotationDto, toInspirationDto, toSpotDto } from '../services/serialization.js';
 import type { SerializeContext } from '../services/serialization.js';
 import { ingestAsset, type AssetRow } from '../services/assets.js';
@@ -118,6 +120,7 @@ inspirationRouter.post(
       title: input.title,
       note: input.note ?? null,
       seasonTags: input.seasonTags,
+      actor: actorOf(req),
     });
     ok(res, { id }, 201);
   }),
@@ -172,16 +175,26 @@ inspirationRouter.patch(
       reindexFts(row.id);
     }
     if (input.status && input.status !== row.status) {
-      if (input.status === 'archived') archiveInspiration(row.id, 'manual');
-      else if (input.status === 'dropped') dropInspiration(row.id, 'manual');
-      else
+      const actor = actorOf(req);
+      if (input.status === 'archived') archiveInspiration(row.id, 'manual', actor);
+      else if (input.status === 'dropped') dropInspiration(row.id, 'manual', actor);
+      else {
         db.prepare('UPDATE inspiration SET status = ?, updated_at = ? WHERE id = ?').run(
           input.status,
           nowIso(),
           row.id,
         );
+        recordLifecycle({
+          libraryId: ctx.libraryId,
+          inspirationId: row.id,
+          fromStatus: row.status,
+          toStatus: input.status as InspirationStatus,
+          actor,
+          reason: '手动调整状态',
+        });
+      }
     }
-    syncStatus(row.id);
+    syncStatus(row.id, actorOf(req));
     if (input.spotId !== undefined) touch(row.id);
     ok(res, { item: toInspirationDto(requireInspiration(row.id, ctx.libraryId), ctx) });
   }),
@@ -200,8 +213,8 @@ inspirationRouter.post(
         .get(spotId, ctx.libraryId);
       if (!spot) throw errors.notFound('机位');
     }
-    setSpot(row.id, spotId);
-    ok(res, { spotId, status: syncStatus(row.id) });
+    setSpot(row.id, spotId, actorOf(req));
+    ok(res, { spotId, status: syncStatus(row.id, actorOf(req)) });
   }),
 );
 
@@ -211,7 +224,7 @@ inspirationRouter.post(
     const ctx = ctxOf(req);
     const row = requireInspiration(req.params.id, ctx.libraryId);
     const { reason } = z.object({ reason: z.string().max(500).nullable().optional() }).parse(req.body ?? {});
-    archiveInspiration(row.id, reason ?? null);
+    archiveInspiration(row.id, reason ?? null, actorOf(req));
     ok(res, { status: 'archived' });
   }),
 );
@@ -222,7 +235,7 @@ inspirationRouter.post(
     const ctx = ctxOf(req);
     const row = requireInspiration(req.params.id, ctx.libraryId);
     const { reason } = z.object({ reason: z.string().min(1).max(500) }).parse(req.body);
-    dropInspiration(row.id, reason);
+    dropInspiration(row.id, reason, actorOf(req));
     ok(res, { status: 'dropped' });
   }),
 );
@@ -236,7 +249,7 @@ inspirationRouter.post(
       .parse(req.body);
     requireInspiration(input.keepId, ctx.libraryId);
     for (const id of input.mergeIds) requireInspiration(id, ctx.libraryId);
-    mergeInspirations(input.keepId, input.mergeIds, input.reason ?? 'merged');
+    mergeInspirations(input.keepId, input.mergeIds, input.reason ?? 'merged', actorOf(req));
     ok(res, { merged: input.mergeIds.length });
   }),
 );
@@ -246,12 +259,13 @@ inspirationRouter.post(
   ah(async (req, res) => {
     const ctx = ctxOf(req);
     const input = bulkTagSchema.parse(req.body);
+    const actor = actorOf(req);
     let added = 0;
     let removed = 0;
     for (const id of input.ids) {
       requireInspiration(id, ctx.libraryId);
-      if (input.addTagIds.length) added += addTags(id, input.addTagIds, 'bulk');
-      if (input.removeTagIds.length) removed += removeTags(id, input.removeTagIds);
+      if (input.addTagIds.length) added += addTags(id, input.addTagIds, 'bulk', actor);
+      if (input.removeTagIds.length) removed += removeTags(id, input.removeTagIds, actor);
     }
     ok(res, { added, removed });
   }),

@@ -3,6 +3,7 @@ import type {
   AlbumDto,
   AlbumGapDto,
   InspirationDto,
+  LifecycleEventDto,
   PlanDto,
   ReminderDto,
   ReproWindowDto,
@@ -49,6 +50,14 @@ export const useWindows = (id: string | undefined, days = 7) =>
       get<{ items: ReproWindowDto[]; summary: { nextGoodAt: string | null; goodIn30d: number } }>(
         `/inspirations/${id}/windows?days=${days}`,
       ),
+    enabled: Boolean(id),
+  });
+
+/** 生命周期台账。revision 传灵感卡的 updatedAt：任何状态变化都会顶改它，时间线随之自动刷新 */
+export const useLifecycle = (id: string | undefined, revision?: string) =>
+  useQuery({
+    queryKey: ['lifecycle', id, revision ?? ''],
+    queryFn: () => get<{ items: LifecycleEventDto[] }>(`/inspirations/${id}/lifecycle`),
     enabled: Boolean(id),
   });
 
@@ -297,6 +306,24 @@ export function useRecomputeSun() {
         suggestedExpectedAzimuth: number;
         shotAt: string;
       }>(`/assets/${assetId}/recompute-sun`, {}),
+    onSuccess: invalidate,
+  });
+}
+
+/** 补录一条历史状态转变：只追加台账，不改变卡片当前状态 */
+export function useBackfillLifecycle() {
+  const invalidate = useInvalidate(['lifecycle']);
+  return useMutation({
+    mutationFn: ({
+      id,
+      ...body
+    }: {
+      id: string;
+      toStatus: string;
+      fromStatus?: string | null;
+      occurredAt: string;
+      reason: string;
+    }) => post<{ item: LifecycleEventDto }>(`/inspirations/${id}/lifecycle/backfill`, body),
     onSuccess: invalidate,
   });
 }

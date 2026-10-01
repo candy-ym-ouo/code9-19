@@ -4,7 +4,7 @@ import { createPlanSchema, fillResultSchema, type PlanDto } from '@flil/shared';
 import { getDb, newId, nowIso, toJson } from '../db.js';
 import { ah, ok } from '../http/respond.js';
 import { authenticate } from '../http/middleware.js';
-import { ctxOf } from '../http/context.js';
+import { actorOf, ctxOf } from '../http/context.js';
 import { errors } from '../http/errors.js';
 import { requireInspiration, syncStatus, touch } from '../services/inspirations.js';
 import {
@@ -143,7 +143,7 @@ workflowRouter.post(
     db.prepare(
       "UPDATE reminder SET status = 'done', updated_at = ? WHERE subject_id = ? AND rule_code = 'R2' AND status IN ('pending','notified')",
     ).run(ts, inspiration.id);
-    syncStatus(inspiration.id);
+    syncStatus(inspiration.id, actorOf(req));
     ok(res, { id, plannedAt: win.start_at, leaveAt: leaveAt.toISOString() }, 201);
   }),
 );
@@ -198,7 +198,7 @@ workflowRouter.patch(
         req.params.id,
       );
     }
-    syncStatus(plan.inspiration_id as string);
+    syncStatus(plan.inspiration_id as string, actorOf(req));
     ok(res, { updated: true });
   }),
 );
@@ -252,7 +252,7 @@ workflowRouter.post(
     run();
 
     const calibration = applyCalibration(ctx.libraryId, plan.inspiration_id as string, id);
-    syncStatus(plan.inspiration_id as string);
+    syncStatus(plan.inspiration_id as string, actorOf(req));
     ok(res, { resultId: id, ...calibration }, 201);
   }),
 );
