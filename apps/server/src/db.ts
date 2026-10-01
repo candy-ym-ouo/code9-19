@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config, ensureDirs } from './config.js';
+import { bootstrapAllExisting } from './services/lifecycle.js';
 
 export type SqliteDb = Database.Database;
 
@@ -25,7 +26,13 @@ export function closeDb(): void {
   }
 }
 
-/** 按文件名顺序应用 sql/*.sql，已应用过的记录在 _migration 表 */
+/**
+ * 按文件名顺序应用 sql/*.sql，已应用过的记录在 _migration 表。
+ *
+ * 生命周期审计（0002）建表后，为迁移前已存在的历史卡片补一条 genesis 基线：
+ * 以 system 为责任人、event_at 取卡片创建时间，并显式标注 backfilled——
+ * 老数据有了可追溯起点，且不会伪装成"当时就有审计"。
+ */
 export function migrate(): string[] {
   const database = getDb();
   database.exec(
@@ -47,6 +54,9 @@ export function migrate(): string[] {
       database
         .prepare('INSERT INTO _migration (name, applied_at) VALUES (?, ?)')
         .run(file, new Date().toISOString());
+      if (file === '0002_lifecycle_audit.sql') {
+        bootstrapAllExisting();
+      }
     });
     run();
     ran.push(file);

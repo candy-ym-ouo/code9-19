@@ -1,6 +1,7 @@
 import { getDb, newId, nowIso, parseJson, toJson } from '../db.js';
 import { errors } from '../http/errors.js';
 import type { InspirationRow } from './serialization.js';
+import { recordGenesis, recordStatusChange } from './lifecycle.js';
 
 export function slugify(name: string): string {
   const s = name
@@ -41,8 +42,11 @@ export function hasTiming(inspirationId: string): boolean {
 /**
  * 状态机（文档 6.1）：所有状态变更都从这里走，保证没有"断头状态"。
  * 终态（archived / dropped）不会被自动改写。
+ *
+ * 五阶段（草稿/布光/排期/归档/放弃）之间的跳变会同步落一条不可变审计事件；
+ * 草稿期内的自动细状态（tagging / timing_missing 等）只反映工作进度，不产生审计噪声。
  */
-export function syncStatus(inspirationId: string): InspirationRow['status'] {
+export function syncStatus(inspirationId: string, reasonOverride?: string): InspirationRow['status'] {
   const db = getDb();
   const row = db.prepare('SELECT * FROM inspiration WHERE id = ?').get(inspirationId) as
     | InspirationRow
@@ -50,11 +54,13 @@ export function syncStatus(inspirationId: string): InspirationRow['status'] {
   if (!row) throw errors.notFound('灵感卡');
   if (row.status === 'archived' || row.status === 'dropped') return row.status;
 
-  const hasPlan = Boolean(
-    db
-      .prepare('SELECT 1 AS x FROM shoot_plan WHERE inspiration_id = ? AND status != ?')
-      .get(inspirationId, 'cancelled'),
-  );
+  const activePlans = db
+    .prepare('SELECT COUNT(*) AS n FROM shoot_plan WHERE inspiration_id = ? AND status != ?')
+    .get(inspirationId, 'cancelled') as { n: number };
+  const cancelledPlans = db
+    .prepare("SELECT COUNT(*) AS n FROM shoot_plan WHERE inspiration_id = ? AND status = 'cancelled'")
+    .get(inspirationId) as { n: number };
+  const hasPlan = activePlans.n > 0;
   const hasResult = Boolean(
     db.prepare('SELECT 1 AS x FROM shoot_result WHERE inspiration_id = ?').get(inspirationId),
   );
@@ -74,11 +80,16 @@ export function syncStatus(inspirationId: string): InspirationRow['status'] {
   }
 
   if (status !== row.status) {
-    db.prepare('UPDATE inspiration SET status = ?, updated_at = ? WHERE id = ?').run(
-      status,
-      nowIso(),
-      inspirationId,
-    );
+    const ts = nowIso();
+    db.prepare('UPDATE inspiration SET status = ?, updated_at = ? WHERE id = ?').run(status, ts, inspirationId);
+    // 审计：仅五阶段跳变落事件；排期退回布光时若存在已取消的计划，归因为 plan_cancelled
+    let reason = reasonOverride;
+    if (!reason) {
+      if (status === 'scheduled') reason = 'plan_created';
+      else if (cancelledPlans.n > 0) reason = 'plan_cancelled';
+      else reason = status === 'ready' ? 'ready' : 'manual';
+    }
+    recordStatusChange(row, status, reason);
   }
   return status;
 }
@@ -97,6 +108,8 @@ export function createInspiration(params: {
        miss_count, hit_rate, created_at, updated_at)
      VALUES (?,?,?,?, 'draft', ?, 0,0,0,0, ?, ?)`,
   ).run(id, params.libraryId, params.title, params.note ?? null, toJson(params.seasonTags ?? []), ts, ts);
+  // 生命周期起点：草稿 genesis
+  recordGenesis(id, params.libraryId);
   reindexFts(id);
   return id;
 }
@@ -162,15 +175,31 @@ export function setSpot(inspirationId: string, spotId: string | null): void {
 }
 
 export function archiveInspiration(id: string, reason: string | null): void {
-  getDb()
-    .prepare('UPDATE inspiration SET status = ?, archived_reason = ?, updated_at = ? WHERE id = ?')
-    .run('archived', reason, nowIso(), id);
+  const db = getDb();
+  const before = db.prepare('SELECT * FROM inspiration WHERE id = ?').get(id) as InspirationRow | undefined;
+  if (!before) throw errors.notFound('灵感卡');
+  const ts = nowIso();
+  db.prepare('UPDATE inspiration SET status = ?, archived_reason = ?, updated_at = ? WHERE id = ?').run(
+    'archived',
+    reason,
+    ts,
+    id,
+  );
+  recordStatusChange(before, 'archived', 'manual', { archivedReason: reason });
 }
 
 export function dropInspiration(id: string, reason: string): void {
-  getDb()
-    .prepare('UPDATE inspiration SET status = ?, archived_reason = ?, updated_at = ? WHERE id = ?')
-    .run('dropped', reason, nowIso(), id);
+  const db = getDb();
+  const before = db.prepare('SELECT * FROM inspiration WHERE id = ?').get(id) as InspirationRow | undefined;
+  if (!before) throw errors.notFound('灵感卡');
+  const ts = nowIso();
+  db.prepare('UPDATE inspiration SET status = ?, archived_reason = ?, updated_at = ? WHERE id = ?').run(
+    'dropped',
+    reason,
+    ts,
+    id,
+  );
+  recordStatusChange(before, 'dropped', 'manual', { dropReason: reason });
 }
 
 /** 合并重复卡：标签与图片并入 keep，来源卡进终态 dropped（文档 9.2） */
@@ -179,6 +208,10 @@ export function mergeInspirations(keepId: string, mergeIds: string[], reason = '
   const run = db.transaction(() => {
     for (const mergeId of mergeIds) {
       if (mergeId === keepId) continue;
+      const before = db.prepare('SELECT * FROM inspiration WHERE id = ?').get(mergeId) as
+        | InspirationRow
+        | undefined;
+      if (!before) continue;
       const tags = db
         .prepare('SELECT tag_id FROM inspiration_tag WHERE inspiration_id = ?')
         .all(mergeId) as { tag_id: string }[];
@@ -195,6 +228,7 @@ export function mergeInspirations(keepId: string, mergeIds: string[], reason = '
         nowIso(),
         mergeId,
       );
+      recordStatusChange(before, 'dropped', 'merged', { mergedInto: keepId, reason });
       reindexFts(mergeId);
     }
     reindexFts(keepId);

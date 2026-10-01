@@ -32,6 +32,8 @@ import {
   syncStatus,
   touch,
 } from '../services/inspirations.js';
+import { recordStatusChange, targetStatusForPhase } from '../services/lifecycle.js';
+import { phaseOfStatus } from '@flil/shared';
 import { toAssetDto, toAnnotationDto, toInspirationDto, toSpotDto } from '../services/serialization.js';
 import type { SerializeContext } from '../services/serialization.js';
 import { ingestAsset, type AssetRow } from '../services/assets.js';
@@ -171,17 +173,25 @@ inspirationRouter.patch(
       );
       reindexFts(row.id);
     }
-    if (input.status && input.status !== row.status) {
-      if (input.status === 'archived') archiveInspiration(row.id, 'manual');
-      else if (input.status === 'dropped') dropInspiration(row.id, 'manual');
-      else
-        db.prepare('UPDATE inspiration SET status = ?, updated_at = ? WHERE id = ?').run(
-          input.status,
-          nowIso(),
-          row.id,
-        );
-    }
+    // 先让数据驱动的状态机结算（标签/条件/计划的变化），再应用人工显式转变，
+    // 保证一次请求只产生一条审计事件、且终态由专门入口处理。
     syncStatus(row.id);
+    if (input.status) {
+      const settled = requireInspiration(row.id, ctx.libraryId);
+      if (input.status !== settled.status) {
+        const targetPhase = phaseOfStatus(input.status);
+        if (input.status === 'archived') {
+          archiveInspiration(row.id, 'manual');
+        } else if (input.status === 'dropped') {
+          dropInspiration(row.id, 'manual');
+        } else {
+          const target = targetStatusForPhase(settled.status, targetPhase);
+          const ts = nowIso();
+          db.prepare('UPDATE inspiration SET status = ?, updated_at = ? WHERE id = ?').run(target, ts, row.id);
+          recordStatusChange(settled, target, 'manual', { requestedStatus: input.status });
+        }
+      }
+    }
     if (input.spotId !== undefined) touch(row.id);
     ok(res, { item: toInspirationDto(requireInspiration(row.id, ctx.libraryId), ctx) });
   }),

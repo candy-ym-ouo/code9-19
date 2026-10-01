@@ -3,6 +3,8 @@ import type {
   AlbumDto,
   AlbumGapDto,
   InspirationDto,
+  LifecycleEventDto,
+  LifecycleVerifyResult,
   PlanDto,
   ReminderDto,
   ReproWindowDto,
@@ -41,6 +43,45 @@ export const useInspiration = (id: string | undefined) =>
     queryFn: () => get<{ item: InspirationDto }>(`/inspirations/${id}`),
     enabled: Boolean(id),
   });
+
+export const useLifecycleTrail = (id: string | undefined, order: 'seq' | 'event' = 'seq') =>
+  useQuery({
+    queryKey: ['lifecycle', id, order],
+    queryFn: () =>
+      get<{
+        items: LifecycleEventDto[];
+        integrity: LifecycleVerifyResult;
+        currentPhase: string | null;
+      }>(`/inspirations/${id}/lifecycle${order === 'event' ? '?order=event' : ''}`),
+    enabled: Boolean(id),
+  });
+
+export const useLifecycleEvents = (params: Record<string, string | number | undefined> = {}) => {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') qs.set(k, String(v));
+  return useQuery({
+    queryKey: ['lifecycle-events', qs.toString()],
+    queryFn: () => get<{ items: LifecycleEventDto[] }>(`/lifecycle/events?${qs}`),
+  });
+};
+
+export function useBackfillLifecycle() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      ...body
+    }: {
+      id: string;
+      phase: string;
+      reason: string;
+      eventAt: string;
+      detail?: Record<string, unknown> | null;
+    }) => post<{ item: LifecycleEventDto }>(`/inspirations/${id}/lifecycle/backfill`, body),
+    onSuccess: (_data, vars) =>
+      void qc.invalidateQueries({ queryKey: ['lifecycle', vars.id] }),
+  });
+}
 
 export const useWindows = (id: string | undefined, days = 7) =>
   useQuery({

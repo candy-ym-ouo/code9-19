@@ -123,6 +123,7 @@ export function exportAll(libraryId: string): Record<string, unknown> {
     'share_link',
     'place',
     'spot',
+    'inspiration_lifecycle_event',
   ];
   const out: Record<string, unknown> = { exportedAt: nowIso(), libraryId };
   for (const table of tables) {

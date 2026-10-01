@@ -350,6 +350,53 @@ async function main() {
   const badTiming = await req('PUT', `/inspirations/${cardId}/timing`, { timeAnchor: 'not_an_anchor' });
   check('非法参数返回 400 而不是 500', badTiming.status === 400 && badTiming.json?.error?.code === 'BAD_REQUEST', JSON.stringify(badTiming.json));
 
+  // 21. 生命周期审计：每次转变留痕 + 补录不篡改先后 + 哈希链
+  const auditCard = await req('POST', '/inspirations', { title: '审计冒烟卡' });
+  const auditId = auditCard.json.id;
+  let trail = await req('GET', `/inspirations/${auditId}/lifecycle`);
+  check('新建卡片即有 genesis 草稿基线', trail.json?.items?.length === 1 && trail.json.items[0].kind === 'genesis');
+  check('审计自带责任人与双时间', Boolean(trail.json.items[0].actorId) && trail.json.items[0].eventAt === trail.json.items[0].recordedAt);
+
+  // 主卡在前面的流程里已经 draft → lit → scheduled → shot，审计链应逐跳可查
+  const mainTrail = await req('GET', `/inspirations/${cardId}/lifecycle`);
+  const mainPhases = (mainTrail.json?.items ?? []).map((e) => e.phase);
+  check('主卡经历过布光与排期阶段', mainPhases.includes('lit') && mainPhases.includes('scheduled'), mainPhases.join(','));
+  check('主卡审计哈希链完整', mainTrail.json?.integrity?.ok === true);
+
+  // 补录：发生在 5 天前的一次排期
+  const pastAt = new Date(Date.now() - 5 * 86400000).toISOString();
+  const backfill = await req('POST', `/inspirations/${auditId}/lifecycle/backfill`, {
+    phase: 'scheduled',
+    reason: '冒烟：断网期间实际排过期',
+    eventAt: pastAt,
+  });
+  check('补录成功且标记 backfilled', backfill.status === 201 && backfill.json?.item?.backfilled === true);
+  check('补录 seq 追加在链尾（不插队）', backfill.json.item.seq === 2);
+  check('补录保留发生时间与更晚的落账时间', backfill.json.item.eventAt === pastAt && backfill.json.item.recordedAt > pastAt);
+  check('补录不改卡片当前状态', (await req('GET', `/inspirations/${auditId}`)).json.item.status === 'draft');
+
+  const eventOrder = await req('GET', `/inspirations/${auditId}/lifecycle?order=event`);
+  check('按发生时间视角补录条目排在最前', eventOrder.json.items[0].backfilled === true);
+  check('补录后哈希链仍然完整', eventOrder.json.integrity.ok === true);
+
+  const futureBackfill = await req('POST', `/inspirations/${auditId}/lifecycle/backfill`, {
+    phase: 'lit',
+    reason: '未来时间非法',
+    eventAt: '2099-01-01T00:00:00.000Z',
+  });
+  check('未来补录被拒', futureBackfill.status === 400);
+  const terminalBackfill = await req('POST', `/inspirations/${auditId}/lifecycle/backfill`, {
+    phase: 'dropped',
+    reason: '活动卡不能补放弃终态',
+    eventAt: new Date(Date.now() - 86400000).toISOString(),
+  });
+  check('矛盾终态补录被拒', terminalBackfill.status === 400);
+
+  const libEvents = await req('GET', '/lifecycle/events?backfilled=true&sort=event');
+  check('全库可回溯补录事件（按时间）', (libEvents.json?.items ?? []).some((e) => e.inspirationId === auditId));
+  const verify = await req('GET', '/lifecycle/verify');
+  check('全库哈希链校验通过', verify.json?.ok === true, JSON.stringify(verify.json));
+
   process.stdout.write(`\n结果：通过 ${passed} 项，失败 ${failed} 项\n`);
   if (failed) {
     process.stdout.write('失败明细：\n');

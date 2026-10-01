@@ -15,6 +15,7 @@ import { albumRouter } from './routes/albums.js';
 import { searchRouter } from './routes/search.js';
 import { shareRouter, publicShareRouter } from './routes/share.js';
 import { opsRouter } from './routes/ops.js';
+import { lifecycleRouter } from './routes/lifecycle.js';
 
 export function createApp(): Express {
   const app = express();
@@ -40,6 +41,7 @@ export function createApp(): Express {
   app.use('/api', albumRouter);
   app.use('/api', searchRouter);
   app.use('/api', shareRouter);
+  app.use('/api', lifecycleRouter);
 
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: '接口不存在', details: {} } });

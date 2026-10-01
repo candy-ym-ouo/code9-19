@@ -5,6 +5,7 @@ import { config } from '../config.js';
 import { errors } from './errors.js';
 import { logger } from '../logger.js';
 import { fail } from './respond.js';
+import { runWithActor } from './actorContext.js';
 import type { AuthUser } from '@flil/shared';
 
 declare module 'express-serve-static-core' {
@@ -58,7 +59,8 @@ export function authenticate(required = true) {
     }
     try {
       req.auth = jwt.verify(token, config.jwtSecret) as JwtPayload;
-      next();
+      // 让整条调用链（含服务层）都能取到责任人，写入生命周期审计
+      runWithActor(req.auth, () => next());
     } catch {
       if (required) {
         fail(res, errors.authRequired());

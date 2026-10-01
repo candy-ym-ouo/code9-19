@@ -16,6 +16,7 @@ import type {
   WeatherPhenomenon,
   WindowVerdict,
 } from './enums.js';
+import type { LifecycleEventKind, LifecyclePhase as Phase } from './lifecycle.js';
 import type { PaletteColor } from './palette.js';
 
 export interface WeatherProfile {
@@ -235,3 +236,43 @@ export interface AuthUser {
   libraryId: string;
   role: 'owner' | 'member';
 }
+
+/** 灵感生命周期审计事件（不可变；append-only + 哈希链） */
+export interface LifecycleEventDto {
+  id: string;
+  inspirationId: string;
+  /** 库内、按灵感分组的单调序号：1, 2, 3 …… 补录只会追加更大的 seq，绝不插队改写 */
+  seq: number;
+  kind: 'genesis' | 'transition';
+  /** 进入的阶段 */
+  phase: Phase;
+  phaseLabel: string;
+  /** 触发时的底层细状态（draft/ready/scheduled/archived…） */
+  fromStatus: InspirationStatus | null;
+  toStatus: InspirationStatus;
+  reason: string;
+  detail: Record<string, unknown> | null;
+  /** 责任人（操作人）；系统自动流转时为 system */
+  actorId: string | null;
+  actorName: string;
+  actorRole: 'owner' | 'member' | 'system';
+  /** 业务发生时间（真实发生的时刻；补录时可以早于 recordedAt） */
+  eventAt: string;
+  /** 入库时间（服务器落账时刻，永不被修改） */
+  recordedAt: string;
+  /** 是否为事后补录：eventAt 早于该灵感上一条事件的 eventAt */
+  backfilled: boolean;
+  /** 哈希链：前一条事件（同灵感、seq 相邻）的 hash */
+  prevHash: string | null;
+  hash: string;
+}
+
+export interface LifecycleVerifyResult {
+  ok: boolean;
+  scope: 'inspiration' | 'library';
+  checked: number;
+  /** 第一条断链事件 id（ok=false 时给出） */
+  brokenAt: string | null;
+  reason: string | null;
+}
+

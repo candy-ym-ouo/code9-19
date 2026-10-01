@@ -10,9 +10,12 @@ import {
   TimeAnchor,
   WeatherPhenomenon,
 } from './enums.js';
+import { LifecyclePhase } from './lifecycle.js';
 
 const zEnum = <T extends Record<string, string>>(e: T) =>
   z.enum(Object.values(e) as [string, ...string[]]);
+
+const zPhaseEnum = () => z.enum(Object.values(LifecyclePhase) as [string, ...string[]]);
 
 export const latLngSchema = z.object({
   lat: z.number().min(-90).max(90),
@@ -207,6 +210,25 @@ export const offlineOpSchema = z.object({
   clientOpId: z.string().min(8).max(80),
   opType: z.enum(['create_inspiration', 'tag', 'fill_result', 'note']),
   payload: z.record(z.unknown()),
+});
+
+/** 显式生命周期转变（进入归档 / 放弃；或人工把活动卡拨到某阶段） */
+export const lifecycleTransitionSchema = z.object({
+  phase: zPhaseEnum(),
+  reason: z.string().min(1).max(200),
+  detail: z.record(z.unknown()).nullable().optional(),
+});
+
+/**
+ * 事后补录一次历史转变。
+ * 只追加审计记录、不改卡片当前状态；eventAt 必须早于现有链尾的发生时间，
+ * 且不能补出一个与当前阶段矛盾的终态（服务端再做一次闭环判定）。
+ */
+export const lifecycleBackfillSchema = z.object({
+  phase: zPhaseEnum(),
+  reason: z.string().min(1).max(200),
+  eventAt: z.string().datetime(),
+  detail: z.record(z.unknown()).nullable().optional(),
 });
 
 export { AssetRole };

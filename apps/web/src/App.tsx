@@ -15,6 +15,7 @@ import Search from './routes/Search.js';
 import Places from './routes/Places.js';
 import Plans from './routes/Plans.js';
 import Settings from './routes/Settings.js';
+import LifecycleAudit from './routes/LifecycleAudit.js';
 import ShareView from './routes/ShareView.js';
 
 const { Header, Sider, Content } = Layout;
@@ -50,6 +51,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     },
     { key: '/albums', label: <Link to="/albums">画册</Link> },
     { key: '/places', label: <Link to="/places">地点</Link> },
+    { key: '/audit', label: <Link to="/audit">生命周期审计</Link> },
     { key: '/settings', label: <Link to="/settings">设置</Link> },
   ];
 
@@ -111,6 +113,7 @@ export default function App() {
               <Route path="/albums" element={<Albums />} />
               <Route path="/albums/:id" element={<AlbumDetail />} />
               <Route path="/places" element={<Places />} />
+              <Route path="/audit" element={<LifecycleAudit />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
